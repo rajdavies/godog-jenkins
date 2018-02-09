@@ -78,7 +78,7 @@ There seems to be an issue in the minikube VM where the date is 2 hours behind, 
 
 To check run:
 ```apple
-minishift ssh date
+minikube ssh date
 ```
 To set it correctly:
 ```
