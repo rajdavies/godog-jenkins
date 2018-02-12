@@ -7,6 +7,7 @@ import:
 - package: k8s.io/code-generator
 - package: k8s.io/gengo
 - package: k8s.io/metrics
+- package: k8s.io/helm
 - package: github.com/pborman/uuid
 - package: github.com/jenkins-x/golang-jenkins
 - package: github.com/google/go-github
@@ -27,6 +28,10 @@ import:
 - package: code.gitea.io/sdk/gitea
 - package: github.com/Pallinder/go-randomdata
 - package: github.com/chromedp/chromedp
+- package: github.com/cpuguy83/go-md2man
+  version: v1.0.4
+- package: github.com/russross/blackfriday
+  version: v1.5
 testImport:
 - package: github.com/stretchr/testify
   subpackages:

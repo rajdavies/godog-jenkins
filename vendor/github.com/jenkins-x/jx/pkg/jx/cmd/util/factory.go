@@ -15,9 +15,11 @@ import (
 	"github.com/jenkins-x/jx/pkg/auth"
 	"github.com/jenkins-x/jx/pkg/client/clientset/versioned"
 	"github.com/jenkins-x/jx/pkg/util"
-	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metricsclient "k8s.io/metrics/pkg/client/clientset_generated/clientset"
 
 	// this is so that we load the auth plugins so we can connect to, say, GCP
@@ -139,9 +141,7 @@ func (f *factory) CreateAuthConfigService(fileName string) (auth.AuthConfigServi
 }
 
 func (f *factory) CreateJXClient() (*versioned.Clientset, string, error) {
-	kubeconfig := createKubeConfig()
-	// use the current context in kubeconfig
-	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	config, err := f.createKubeConfig()
 	if err != nil {
 		return nil, "", err
 	}
@@ -159,9 +159,7 @@ func (f *factory) CreateJXClient() (*versioned.Clientset, string, error) {
 }
 
 func (f *factory) CreateApiExtensionsClient() (*apiextensionsclientset.Clientset, error) {
-	kubeconfig := createKubeConfig()
-	// use the current context in kubeconfig
-	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	config, err := f.createKubeConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -169,9 +167,7 @@ func (f *factory) CreateApiExtensionsClient() (*apiextensionsclientset.Clientset
 }
 
 func (f *factory) CreateMetricsClient() (*metricsclient.Clientset, error) {
-	kubeconfig := createKubeConfig()
-	// use the current context in kubeconfig
-	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	config, err := f.createKubeConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -179,8 +175,11 @@ func (f *factory) CreateMetricsClient() (*metricsclient.Clientset, error) {
 }
 
 func (f *factory) CreateClient() (*kubernetes.Clientset, string, error) {
-	kubeconfig := createKubeConfig()
-	client, err := kube.CreateClient(kubeconfig)
+	cfg, err := f.createKubeConfig()
+	if err != nil {
+		return nil, "", err
+	}
+	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, "", err
 	}
@@ -216,6 +215,29 @@ func createKubeConfig() *string {
 	}
 	kubeConfigCache = kubeconfig
 	return kubeconfig
+}
+
+func (f *factory) createKubeConfig() (*rest.Config, error) {
+	kubeconfig := createKubeConfig()
+	var config *rest.Config
+	var err error
+	if kubeconfig != nil {
+		exists, err := util.FileExists(*kubeconfig)
+		if err == nil && exists {
+			// use the current context in kubeconfig
+			config, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if config == nil {
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return config, nil
 }
 
 func (f *factory) CreateTable(out io.Writer) table.Table {

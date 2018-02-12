@@ -92,6 +92,16 @@ release: check
 	
 	updatebot push-version --kind brew jx $(VERSION)
 	updatebot push-version --kind docker JX_VERSION $(VERSION)
+	updatebot update-loop
+
+	echo "Updating the JX CLI reference docs"
+	git clone https://github.com/jenkins-x/documentation.git
+	cd documentation/_docs/reference; \
+		../../../build/linux/jx create docs; \
+		git config credential.helper store; \
+		git add *; \
+		git commit --allow-empty -a -m "updated jx commands from $(VERSION)"; \
+		git push origin
 
 clean:
 	rm -rf build release
@@ -99,7 +109,13 @@ clean:
 linux:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 $(GO) build $(BUILDFLAGS) -o build/$(NAME)-linux-amd64 cmd/jx/jx.go
 
-docker: linux
-	docker build -t jenkins-x/jx .
+docker-go: linux Dockerfile.buildgo
+	docker build --no-cache -t builder-go -f Dockerfile.buildgo .
+
+docker-maven: linux Dockerfile.maven
+	docker build --no-cache -t builder-maven -f Dockerfile.maven .
+
+docker-pipeline: linux
+	docker build -t rawlingsj/builder-base:dev . -f Dockerfile-pipeline
 
 .PHONY: release clean arm

@@ -3,10 +3,13 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
 	"strings"
 
 	"os"
+
+	"time"
 
 	"github.com/jenkins-x/golang-jenkins"
 	"github.com/jenkins-x/jx/pkg/auth"
@@ -33,6 +36,8 @@ type CommonOptions struct {
 	Cmd       *cobra.Command
 	Args      []string
 	BatchMode bool
+	Verbose   bool
+	Headless  bool
 
 	// common cached clients
 	kubeClient       *kubernetes.Clientset
@@ -51,7 +56,7 @@ func (f *ServerFlags) IsEmpty() bool {
 }
 
 func addGitRepoOptionsArguments(cmd *cobra.Command, repositoryOptions *gits.GitRepositoryOptions) {
-	cmd.Flags().StringVarP(&repositoryOptions.ServerURL, "git-provider-url", "", "", "The git server URL to create new git repositories inside")
+	cmd.Flags().StringVarP(&repositoryOptions.ServerURL, "git-provider-url", "", "github.com", "The git server URL to create new git repositories inside")
 	cmd.Flags().StringVarP(&repositoryOptions.Username, "git-username", "", "", "The git username to use for creating new git repositories")
 	cmd.Flags().StringVarP(&repositoryOptions.ApiToken, "git-api-token", "", "", "The git API token to use for creating new git repositories")
 }
@@ -117,6 +122,8 @@ func (o *CommonOptions) getCommandOutput(dir string, name string, args ...string
 
 func (options *CommonOptions) addCommonFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVarP(&options.BatchMode, "batch-mode", "b", false, "In batch mode the command never prompts for user input")
+	cmd.Flags().BoolVarP(&options.Verbose, "verbose", "", false, "Enable verbose logging")
+	cmd.Flags().BoolVarP(&options.Headless, "headless", "", false, "Enable headless operation if using browser automation")
 	options.Cmd = cmd
 }
 
@@ -281,4 +288,160 @@ func (o *CommonOptions) findService(name string) (string, error) {
 		}
 	}
 	return url, nil
+}
+
+func (o *CommonOptions) registerLocalHelmRepo(repoName, ns string) error {
+	if repoName == "" {
+		repoName = kube.LocalHelmRepoName
+	}
+	// TODO we should use the auth package to keep a list of server login/pwds
+	username := "admin"
+	password := "admin"
+
+	// lets check if we have a local helm repository
+	client, _, err := o.Factory.CreateClient()
+	if err != nil {
+		return err
+	}
+	u, err := kube.FindServiceURL(client, ns, kube.ServiceChartMuseum)
+	if err != nil {
+		return err
+	}
+	u2, err := url.Parse(u)
+	if err != nil {
+		return err
+	}
+	if u2.User == nil {
+		u2.User = url.UserPassword(username, password)
+	}
+	helmUrl := u2.String()
+
+	// lets check if we already have the helm repo installed or if we need to add it or remove + add it
+	text, err := o.getCommandOutput("", "helm", "repo", "list")
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(text, "\n")
+	remove := false
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t != "" {
+			fields := strings.Fields(t)
+			if len(fields) > 1 {
+				if fields[0] == repoName {
+					if fields[1] == helmUrl {
+						return nil
+					} else {
+						remove = true
+					}
+				}
+			}
+		}
+	}
+	if remove {
+		err = o.runCommand("helm", "repo", "remove", repoName)
+		if err != nil {
+			return err
+		}
+	}
+	return o.runCommand("helm", "repo", "add", repoName, helmUrl)
+}
+
+// installChart installs the given chart
+func (o *CommonOptions) installChart(releaseName string, chart string, version string, ns string, helmUpdate bool) error {
+	if helmUpdate {
+		err := o.runCommand("helm", "repo", "update")
+		if err != nil {
+			return err
+		}
+	}
+	args := []string{"upgrade", "--install"}
+	if version != "" {
+		args = append(args, "--version", version)
+	}
+	if ns != "" {
+		args = append(args, "--namespace", ns)
+	}
+	args = append(args, releaseName, chart)
+	return o.runCommand("helm", args...)
+}
+
+// deleteChart deletes the given chart
+func (o *CommonOptions) deleteChart(releaseName string, purge bool) error {
+	args := []string{"delete"}
+	if purge {
+		args = append(args, "--purge")
+	}
+	args = append(args, releaseName)
+	return o.runCommand("helm", args...)
+}
+
+func (o *CommonOptions) retry(attempts int, sleep time.Duration, call func() error) (err error) {
+	for i := 0; ; i++ {
+		err = call()
+		if err == nil {
+			return
+		}
+
+		if i >= (attempts - 1) {
+			break
+		}
+
+		time.Sleep(sleep)
+
+		o.Printf("retrying after error:", err)
+	}
+	return fmt.Errorf("after %d attempts, last error: %s", attempts, err)
+}
+
+func (o *CommonOptions) getJobMap(filter string) (map[string]*gojenkins.Job, error) {
+	jobMap := map[string]*gojenkins.Job{}
+	jenkins, err := o.JenkinsClient()
+	if err != nil {
+		return jobMap, err
+	}
+	jobs, err := jenkins.GetJobs()
+	if err != nil {
+		return jobMap, err
+	}
+	o.addJobs(&jobMap, filter, "", jobs)
+	return jobMap, nil
+}
+
+func (o *CommonOptions) addJobs(jobMap *map[string]*gojenkins.Job, filter string, prefix string, jobs []gojenkins.Job) {
+	jenkins, err := o.JenkinsClient()
+	if err != nil {
+		return
+	}
+	for _, j := range jobs {
+		name := jobName(prefix, &j)
+
+		if IsPipeline(&j) {
+			if filter == "" || strings.Contains(name, filter) {
+				(*jobMap)[name] = &j
+			}
+		}
+		if j.Jobs != nil {
+			o.addJobs(jobMap, filter, name, j.Jobs)
+		} else {
+			job, err := jenkins.GetJob(name)
+			if err == nil && job.Jobs != nil {
+				o.addJobs(jobMap, filter, name, job.Jobs)
+			}
+		}
+	}
+}
+func (o *CommonOptions) tailBuild(jobName string, build *gojenkins.Build) error {
+	jenkins, err := o.JenkinsClient()
+	if err != nil {
+		return nil
+	}
+
+	u, err := url.Parse(build.Url)
+	if err != nil {
+		return err
+	}
+	buildPath := u.Path
+	o.Printf("%s %s\n", util.ColorStatus("tailing the log of"), util.ColorInfo(fmt.Sprintf("%s #%d", jobName, build.Number)))
+	return jenkins.TailLog(buildPath, o.Out, time.Second, time.Hour*100)
 }

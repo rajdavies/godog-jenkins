@@ -19,25 +19,47 @@ import (
 	"gopkg.in/AlecAivazis/survey.v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"time"
 )
 
 const (
-	optionEnvironment = "environment"
+	optionEnvironment         = "environment"
+	optionApplication         = "app"
+	optionTimeout             = "timeout"
+	optionPullRequestPollTime = "pull-request-poll-time"
 )
 
 // PromoteOptions containers the CLI options
 type PromoteOptions struct {
 	CommonOptions
 
-	Namespace         string
-	Environment       string
-	Application       string
-	Version           string
-	LocalHelmRepoName string
-	HelmRepositoryURL string
-	Preview           bool
-	NoHelmUpdate      bool
-	AllAutomatic      bool
+	Namespace           string
+	Environment         string
+	Application         string
+	Version             string
+	LocalHelmRepoName   string
+	HelmRepositoryURL   string
+	Preview             bool
+	NoHelmUpdate        bool
+	AllAutomatic        bool
+	Timeout             string
+	PullRequestPollTime string
+
+	TimeoutDuration         *time.Duration
+	PullRequestPollDuration *time.Duration
+}
+
+type ReleaseInfo struct {
+	ReleaseName     string
+	FullAppName     string
+	Version         string
+	PullRequestInfo *ReleasePullRequestInfo
+}
+
+type ReleasePullRequestInfo struct {
+	GitProvider          gits.GitProvider
+	PullRequest          *gits.GitPullRequest
+	PullRequestArguments *gits.GitPullRequestArguments
 }
 
 var (
@@ -46,8 +68,12 @@ var (
 `)
 
 	promote_example = templates.Examples(`
-		# Promote a version of an application to staging
-		jx promote myapp --version 1.2.3 --env staging
+		# Promote a version of the current application to staging 
+        # discovering the application name from the source code
+		jx promote --version 1.2.3 --env staging
+
+		# Promote a version of the myapp application to production
+		jx promote myapp --version 1.2.3 --env prod
 	`)
 )
 
@@ -74,10 +100,13 @@ func NewCmdPromote(f cmdutil.Factory, out io.Writer, errOut io.Writer) *cobra.Co
 	}
 	cmd.Flags().StringVarP(&options.Namespace, "namespace", "n", "", "The Namespace to promote to")
 	cmd.Flags().StringVarP(&options.Environment, optionEnvironment, "e", "", "The Environment to promote to")
-	cmd.Flags().StringVarP(&options.Application, "app", "a", "", "The Application to promote")
+	cmd.Flags().StringVarP(&options.Application, optionApplication, "a", "", "The Application to promote")
 	cmd.Flags().StringVarP(&options.Version, "version", "v", "", "The Version to promote")
 	cmd.Flags().StringVarP(&options.LocalHelmRepoName, "helm-repo-name", "r", kube.LocalHelmRepoName, "The name of the helm repository that contains the app")
 	cmd.Flags().StringVarP(&options.HelmRepositoryURL, "helm-repo-url", "u", helm.DefaultHelmRepositoryURL, "The Helm Repository URL to use for the App")
+	cmd.Flags().StringVarP(&options.Timeout, optionTimeout, "t", "", "The timeout to wait for the promotion to succeed in the underlying Environment. The command fails if the timeout is exceeded or the promotion does not complete")
+	cmd.Flags().StringVarP(&options.PullRequestPollTime, optionPullRequestPollTime, "", "20s", "Poll time when waiting for a Pull Request to merge")
+
 	cmd.Flags().BoolVarP(&options.Preview, "preview", "p", false, "Whether to create a new Preview environment for the app")
 	cmd.Flags().BoolVarP(&options.NoHelmUpdate, "no-helm-update", "", false, "Allows the 'helm repo update' command if you are sure your local helm cache is up to date with the version you wish to promote")
 	cmd.Flags().BoolVarP(&options.AllAutomatic, "all-auto", "", false, "Promote to all automatic environments in order")
@@ -110,7 +139,22 @@ func (o *PromoteOptions) Run() error {
 	if err != nil {
 		return err
 	}
-	return o.Promote(targetNS, env, true)
+	if o.PullRequestPollTime != "" {
+		duration, err := time.ParseDuration(o.PullRequestPollTime)
+		if err != nil {
+			return fmt.Errorf("Invalid duration format %s for option --%s: %s", o.PullRequestPollTime , optionPullRequestPollTime, err)
+		}
+		o.PullRequestPollDuration = &duration
+	}
+	if o.Timeout != "" {
+		duration, err := time.ParseDuration(o.Timeout)
+		if err != nil {
+			return fmt.Errorf("Invalid duration format %s for option --%s: %s", o.Timeout , optionTimeout, err)
+		}
+		o.TimeoutDuration = &duration
+	}
+	_, err = o.Promote(targetNS, env, true)
+	return err
 }
 
 func (o *PromoteOptions) PromoteAllAutomatic() error {
@@ -128,22 +172,24 @@ func (o *PromoteOptions) PromoteAllAutomatic() error {
 	}
 	envs, err := jxClient.JenkinsV1().Environments(team).List(metav1.ListOptions{})
 	if err != nil {
-		return err
+		o.warnf("No Environments found: %s/n", err)
+		return nil
 	}
 	environments := envs.Items
 	if len(environments) == 0 {
-		return fmt.Errorf("No Environments have been created yet in team %s. Please create some via 'jx create env'", team)
+		o.warnf("No Environments have been created yet in team %s. Please create some via 'jx create env'\n", team)
+		return nil
 	}
 	kube.SortEnvironments(environments)
 
 	for _, env := range environments {
 		if env.Spec.PromotionStrategy == v1.PromotionStrategyTypeAutomatic {
 			ns := env.Spec.Namespace
-			err = o.Promote(ns, &env, false)
+			releaseInfo, err := o.Promote(ns, &env, false)
 			if err != nil {
 				return err
 			}
-			err = o.WaitForPromotion(ns, &env)
+			err = o.WaitForPromotion(ns, &env, releaseInfo)
 			if err != nil {
 				return err
 			}
@@ -152,14 +198,29 @@ func (o *PromoteOptions) PromoteAllAutomatic() error {
 	return nil
 }
 
-func (o *PromoteOptions) Promote(targetNS string, env *v1.Environment, warnIfAuto bool) error {
+func (o *PromoteOptions) Promote(targetNS string, env *v1.Environment, warnIfAuto bool) (*ReleaseInfo, error) {
 	app := o.Application
+	if app == "" {
+		o.warnf("No application name could be detected so cannot promote via Helm. If the detection of the helm chart name is not working consider adding it with the --%s argument on the 'jx promomote' command\n", optionApplication)
+		return nil, nil
+	}
 	version := o.Version
 	info := util.ColorInfo
 	if version == "" {
 		o.Printf("Promoting latest version of app %s to namespace %s\n", info(app), info(targetNS))
 	} else {
 		o.Printf("Promoting app %s version %s to namespace %s\n", info(app), info(version), info(targetNS))
+	}
+
+	fullAppName := app
+	if o.LocalHelmRepoName != "" {
+		fullAppName = o.LocalHelmRepoName + "/" + app
+	}
+	releaseName := targetNS + "-" + app
+	releaseInfo := &ReleaseInfo{
+		ReleaseName: releaseName,
+		FullAppName: fullAppName,
+		Version:     version,
 	}
 
 	if warnIfAuto && env != nil && env.Spec.PromotionStrategy == v1.PromotionStrategyTypeAutomatic {
@@ -172,39 +233,42 @@ func (o *PromoteOptions) Promote(targetNS string, env *v1.Environment, warnIfAut
 		flag := false
 		err := survey.AskOne(confirm, &flag, nil)
 		if err != nil {
-			return err
+			return releaseInfo, err
 		}
 		if !flag {
-			return nil
+			return releaseInfo, nil
 		}
 	}
 	if env != nil {
 		source := &env.Spec.Source
 		if source.URL != "" {
-			return o.PromoteViaPullRequest(env)
+			err := o.PromoteViaPullRequest(env, releaseInfo)
+			return releaseInfo, err
 		}
 	}
-	fullAppName := app
-	if o.LocalHelmRepoName != "" {
-		fullAppName = o.LocalHelmRepoName + "/" + app
+
+	err := o.verifyHelmConfigured()
+	if err != nil {
+		return releaseInfo, err
 	}
 
 	// lets do a helm update to ensure we can find the latest version
 	if !o.NoHelmUpdate {
 		o.Printf("Updating the helm repositories to ensure we can find the latest versions...")
-		err := o.runCommand("helm", "repo", "update")
+		err = o.runCommand("helm", "repo", "update")
 		if err != nil {
-			return err
+			return releaseInfo, err
 		}
 	}
-	releaseName := targetNS + "-" + app
 	if version != "" {
-		return o.runCommand("helm", "upgrade", "--install", "--namespace", targetNS, "--version", version, releaseName, fullAppName)
+		err = o.runCommand("helm", "upgrade", "--install", "--namespace", targetNS, "--version", version, releaseName, fullAppName)
+	} else {
+		err = o.runCommand("helm", "upgrade", "--install", "--namespace", targetNS, releaseName, fullAppName)
 	}
-	return o.runCommand("helm", "upgrade", "--install", "--namespace", targetNS, releaseName, fullAppName)
+	return releaseInfo, err
 }
 
-func (o *PromoteOptions) PromoteViaPullRequest(env *v1.Environment) error {
+func (o *PromoteOptions) PromoteViaPullRequest(env *v1.Environment, releaseInfo *ReleaseInfo) error {
 	source := &env.Spec.Source
 	gitURL := source.URL
 	if gitURL == "" {
@@ -373,6 +437,11 @@ func (o *PromoteOptions) PromoteViaPullRequest(env *v1.Environment) error {
 		return err
 	}
 	o.Printf("Created Pull Request: %s\n\n", util.ColorInfo(pr.URL))
+	releaseInfo.PullRequestInfo = &ReleasePullRequestInfo{
+		GitProvider:          provider,
+		PullRequest:          pr,
+		PullRequestArguments: gha,
+	}
 	return nil
 }
 
@@ -445,11 +514,83 @@ func (options *PromoteOptions) discoverAppName() (string, error) {
 		}
 		answer = gitInfo.Name
 	}
+	if answer == "" {
+		// lets try find the chart file
+		chartFile := filepath.Join(dir, "Chart.yaml")
+		exists, err := util.FileExists(chartFile)
+		if err != nil {
+			return answer, err
+		}
+		if !exists {
+			// lets try find all the chart files
+			files, err := filepath.Glob("*/Chart.yaml")
+			if err != nil {
+				return answer, err
+			}
+			if len(files) > 0 {
+				chartFile = files[0]
+			} else {
+				files, err = filepath.Glob("*/*/Chart.yaml")
+				if err != nil {
+					return answer, err
+				}
+				if len(files) > 0 {
+					chartFile = files[0]
+				}
+			}
+		}
+		if chartFile != "" {
+			return helm.LoadChartName(chartFile)
+		}
+	}
 	return answer, nil
 }
 
-func (options *PromoteOptions) WaitForPromotion(ns string, env *v1.Environment) error {
-	// TODO
+func (o *PromoteOptions) WaitForPromotion(ns string, env *v1.Environment, releaseInfo *ReleaseInfo) error {
+	if o.TimeoutDuration == nil {
+		o.Printf("No --%s option specified on the 'jx promote' command so not waiting for the promotion to succeed\n", optionTimeout)
+		return nil
+	}
+	if o.PullRequestPollDuration == nil {
+		o.Printf("No --%s option specified on the 'jx promote' command so not waiting for the promotion to succeed\n", optionPullRequestPollTime)
+		return nil
+	}
+	pullRequestInfo := releaseInfo.PullRequestInfo
+	if pullRequestInfo != nil {
+		err := o.waitForGitOpsPullRequest(ns, env, releaseInfo)
+		if err != nil {
+		  return err
+		}
+	}
+	return nil
+}
+
+// waitForGitOpsPullRequest waits for a github pull request to merge for the promotion
+func (o *PromoteOptions) waitForGitOpsPullRequest(ns string, env *v1.Environment, releaseInfo *ReleaseInfo) error {
+	duration := *o.TimeoutDuration
+	pullRequestInfo := releaseInfo.PullRequestInfo
+	if pullRequestInfo != nil {
+		for {
+			end := time.Now().Add(duration)
+			pr := pullRequestInfo.PullRequest
+			err := pullRequestInfo.GitProvider.UpdatePullRequestStatus(pr)
+			if err != nil {
+				return fmt.Errorf("Failed to query the Pull Request status for %s %s", pr.URL, err)
+			}
+			if pr.Merged != nil && *pr.Merged {
+				o.Printf("Pull Request %s is merged\n", util.ColorInfo(pr.URL))
+				return nil
+			}
+			if pr.IsClosed() {
+				o.warnf("Pull Request %s is closed\n", util.ColorInfo(pr.URL))
+				return fmt.Errorf("Promotion failed as Pull Request %s is closed without merging", pr.URL)
+			}
+			if time.Now().After(end) {
+				return fmt.Errorf("Timed out waiting for pull request %s to merge. Waited %s", pr.URL, duration.String())
+			}
+			time.Sleep(*o.PullRequestPollDuration)
+		}
+	}
 	return nil
 }
 
@@ -489,4 +630,29 @@ func (o *PromoteOptions) findLatestVersion(app string) (string, error) {
 		return "", fmt.Errorf("Could not find a version of app %s in the helm repositories", app)
 	}
 	return maxString, nil
+}
+
+func (o *PromoteOptions) verifyHelmConfigured() error {
+	helmHomeDir := filepath.Join(util.HomeDir(), ".helm")
+	exists, err := util.FileExists(helmHomeDir)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		o.Printf("No helm home dir at %s so lets initialise helm client\n", helmHomeDir)
+
+		err = o.runCommand("helm", "init", "--client-only")
+		if err != nil {
+			return err
+		}
+	}
+
+	f := o.Factory
+	_, ns, _ := f.CreateClient()
+	if err != nil {
+		return err
+	}
+
+	// lets add the releases chart
+	return o.registerLocalHelmRepo(o.LocalHelmRepoName, ns)
 }

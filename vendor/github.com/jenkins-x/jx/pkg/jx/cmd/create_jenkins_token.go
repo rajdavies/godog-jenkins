@@ -10,6 +10,7 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/runner"
 	"github.com/jenkins-x/jx/pkg/auth"
 	"github.com/jenkins-x/jx/pkg/jenkins"
 	"github.com/jenkins-x/jx/pkg/jx/cmd/templates"
@@ -17,6 +18,7 @@ import (
 	"github.com/jenkins-x/jx/pkg/kube"
 	"github.com/jenkins-x/jx/pkg/util"
 	"github.com/spf13/cobra"
+	"time"
 )
 
 var (
@@ -44,6 +46,7 @@ type CreateJenkinsUserOptions struct {
 	Username    string
 	Password    string
 	ApiToken    string
+	Timeout     string
 }
 
 // NewCmdCreateJenkinsUser creates a command
@@ -75,6 +78,7 @@ func NewCmdCreateJenkinsUser(f cmdutil.Factory, out io.Writer, errOut io.Writer)
 	options.ServerFlags.addGitServerFlags(cmd)
 	cmd.Flags().StringVarP(&options.ApiToken, "api-token", "t", "", "The API Token for the user")
 	cmd.Flags().StringVarP(&options.Password, "password", "p", "", "The User password to try automatically create a new API Token")
+	cmd.Flags().StringVarP(&options.Timeout, "timeout", "", "", "The timeout if using browser automation to generate the API token (by passing username and password)")
 
 	return cmd
 }
@@ -132,7 +136,7 @@ func (o *CreateJenkinsUserOptions) Run() error {
 		jenkins.PrintGetTokenFromURL(o.Out, tokenUrl)
 		o.Printf("Then COPY the token and enter in into the form below:\n\n")
 
-		err = config.EditUserAuth(userAuth, o.Username, false)
+		err = config.EditUserAuth("Jenkins", userAuth, o.Username, false)
 		if err != nil {
 			return err
 		}
@@ -152,24 +156,22 @@ func (o *CreateJenkinsUserOptions) Run() error {
 
 // lets try use the users browser to find the API token
 func (o *CreateJenkinsUserOptions) tryFindAPITokenFromBrowser(tokenUrl string, userAuth *auth.UserAuth) error {
-	var err error
-
-	ctxt, cancel := context.WithCancel(context.Background())
+	var ctxt context.Context
+	var cancel context.CancelFunc
+	if o.Timeout != "" {
+		duration, err := time.ParseDuration(o.Timeout)
+		if err != nil {
+			return err
+		}
+		ctxt, cancel = context.WithTimeout(context.Background(), duration)
+	} else {
+		ctxt, cancel = context.WithCancel(context.Background())
+	}
 	defer cancel()
 
-	file, err := ioutil.TempFile("", "jx-browser")
+	c, err := o.createChromeClient(ctxt)
 	if err != nil {
 		return err
-	}
-	writer := bufio.NewWriter(file)
-	o.Printf("Chrome debugging logs written to: %s\n", util.ColorInfo(file.Name()))
-
-	logger := func(message string, args ...interface{}) {
-		fmt.Fprintf(writer, message+"\n", args...)
-	}
-	c, err := chromedp.New(ctxt, chromedp.WithLog(logger))
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	err = c.Run(ctxt, chromedp.Tasks{
@@ -196,6 +198,8 @@ func (o *CreateJenkinsUserOptions) tryFindAPITokenFromBrowser(tokenUrl string, u
 	}
 
 	if login {
+		o.captureScreenshot(ctxt, c, "screenshot-jenkins-login.png", "main-panel", chromedp.ByID)
+
 		o.Printf("logging in\n")
 		err = c.Run(ctxt, chromedp.Tasks{
 			chromedp.WaitVisible(userNameInputName, chromedp.ByID),
@@ -206,22 +210,24 @@ func (o *CreateJenkinsUserOptions) tryFindAPITokenFromBrowser(tokenUrl string, u
 			return err
 		}
 	}
-	o.Printf("Getting the API Token...\n")
+
+	o.captureScreenshot(ctxt, c, "screenshot-jenkins-api-token.png", "main-panel", chromedp.ByID)
 
 	getAPITokenButtonSelector := "//button[normalize-space(text())='Show API Token...']"
-	//tokenInputSelector := "//input[@name='_.apiToken']"
 	nodeSlice = []*cdp.Node{}
+
+	o.Printf("Getting the API Token...\n")
 	err = c.Run(ctxt, chromedp.Tasks{
+		chromedp.Sleep(2 * time.Second),
 		chromedp.WaitVisible(getAPITokenButtonSelector),
 		chromedp.Click(getAPITokenButtonSelector),
-		chromedp.WaitVisible("apiToken", chromedp.ByID),
+		//chromedp.WaitVisible("apiToken", chromedp.ByID),
 		chromedp.Nodes("apiToken", &nodeSlice, chromedp.ByID),
 	})
 	if err != nil {
 		return err
 	}
 	token := ""
-	o.Printf("Got Nodes %#v\n", nodeSlice)
 	for _, node := range nodeSlice {
 		text := node.AttributeValue("value")
 		if text != "" && token == "" {
@@ -239,4 +245,66 @@ func (o *CreateJenkinsUserOptions) tryFindAPITokenFromBrowser(tokenUrl string, u
 		return err
 	}
 	return nil
+}
+
+// lets try use the users browser to find the API token
+func (o *CommonOptions) createChromeClient(ctxt context.Context) (*chromedp.CDP, error) {
+	logger, err := o.createChromeDPLogger()
+	if err != nil {
+		return nil, err
+	}
+	if o.Headless {
+		options := func(m map[string]interface{}) error {
+			m["remote-debugging-port"] = 9222
+			m["no-sandbox"] = true
+			m["headless"] = true
+			return nil
+		}
+
+		return chromedp.New(ctxt, chromedp.WithLog(logger), chromedp.WithRunnerOptions(runner.CommandLineOption(options)))
+	}
+	return chromedp.New(ctxt, chromedp.WithLog(logger))
+}
+
+func (o *CommonOptions) captureScreenshot(ctxt context.Context, c *chromedp.CDP, screenshotFile string, selector interface{}, options ...chromedp.QueryOption) error {
+	o.Printf("Creating a screenshot...\n")
+
+	var picture []byte
+	err := c.Run(ctxt, chromedp.Tasks{
+		chromedp.Sleep(2 * time.Second),
+		chromedp.Screenshot(selector, &picture, options...),
+	})
+	if err != nil {
+		return err
+	}
+	o.Printf("Saving a screenshot...\n")
+
+	err = ioutil.WriteFile(screenshotFile, picture, util.DefaultWritePermissions)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	o.Printf("Saved screenshot: %s\n", util.ColorInfo(screenshotFile))
+	return err
+}
+
+func (o *CommonOptions) createChromeDPLogger() (chromedp.LogFunc, error) {
+	var logger chromedp.LogFunc
+	if o.Verbose {
+		logger = func(message string, args ...interface{}) {
+			o.Printf(message+"\n", args...)
+		}
+	} else {
+		file, err := ioutil.TempFile("", "jx-browser")
+		if err != nil {
+			return logger, err
+		}
+		writer := bufio.NewWriter(file)
+		o.Printf("Chrome debugging logs written to: %s\n", util.ColorInfo(file.Name()))
+
+		logger = func(message string, args ...interface{}) {
+			fmt.Fprintf(writer, message+"\n", args...)
+		}
+	}
+	return logger, nil
 }

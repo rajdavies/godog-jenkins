@@ -1,12 +1,11 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"log"
+	"net/url"
+	"strings"
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/chromedp"
@@ -14,18 +13,25 @@ import (
 	"github.com/jenkins-x/jx/pkg/gits"
 	"github.com/jenkins-x/jx/pkg/jx/cmd/templates"
 	cmdutil "github.com/jenkins-x/jx/pkg/jx/cmd/util"
+	"github.com/jenkins-x/jx/pkg/kube"
 	"github.com/jenkins-x/jx/pkg/nodes"
 	"github.com/jenkins-x/jx/pkg/util"
 	"github.com/spf13/cobra"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"time"
+)
+
+const (
+	jenkinsGitCredentialsSecretKey = "credentials"
 )
 
 var (
-	create_git_user_long = templates.LongDesc(`
-		Creates a new user and API Token for a Git Server
+	create_git_token_long = templates.LongDesc(`
+		Creates a new API Token for a user on a Git Server
 `)
 
-	create_git_user_example = templates.Examples(`
+	create_git_token_example = templates.Examples(`
 		# Add a new API Token for a user for the local git server
         # prompting the user to find and enter the API Token
 		jx create git token -n local someUserName
@@ -37,19 +43,20 @@ var (
 	`)
 )
 
-// CreateGitUserOptions the command line options for the command
-type CreateGitUserOptions struct {
+// CreateGitTokenOptions the command line options for the command
+type CreateGitTokenOptions struct {
 	CreateOptions
 
 	ServerFlags ServerFlags
 	Username    string
 	Password    string
 	ApiToken    string
+	Timeout     string
 }
 
-// NewCmdCreateGitUser creates a command
-func NewCmdCreateGitUser(f cmdutil.Factory, out io.Writer, errOut io.Writer) *cobra.Command {
-	options := &CreateGitUserOptions{
+// NewCmdCreateGitToken creates a command
+func NewCmdCreateGitToken(f cmdutil.Factory, out io.Writer, errOut io.Writer) *cobra.Command {
+	options := &CreateGitTokenOptions{
 		CreateOptions: CreateOptions{
 			CommonOptions: CommonOptions{
 				Factory: f,
@@ -60,11 +67,11 @@ func NewCmdCreateGitUser(f cmdutil.Factory, out io.Writer, errOut io.Writer) *co
 	}
 
 	cmd := &cobra.Command{
-		Use:     "user [username]",
-		Short:   "Adds a new user name and api token for a git server server",
-		Aliases: []string{"token"},
-		Long:    create_git_user_long,
-		Example: create_git_user_example,
+		Use:     "token [username]",
+		Short:   "Adds a new API token for a user on a git server",
+		Aliases: []string{"api-token"},
+		Long:    create_git_token_long,
+		Example: create_git_token_example,
 		Run: func(cmd *cobra.Command, args []string) {
 			options.Cmd = cmd
 			options.Args = args
@@ -76,12 +83,13 @@ func NewCmdCreateGitUser(f cmdutil.Factory, out io.Writer, errOut io.Writer) *co
 	options.ServerFlags.addGitServerFlags(cmd)
 	cmd.Flags().StringVarP(&options.ApiToken, "api-token", "t", "", "The API Token for the user")
 	cmd.Flags().StringVarP(&options.Password, "password", "p", "", "The User password to try automatically create a new API Token")
+	cmd.Flags().StringVarP(&options.Timeout, "timeout", "", "", "The timeout if using browser automation to generate the API token (by passing username and password)")
 
 	return cmd
 }
 
 // Run implements the command
-func (o *CreateGitUserOptions) Run() error {
+func (o *CreateGitTokenOptions) Run() error {
 	args := o.Args
 	if len(args) > 0 {
 		o.Username = args[0]
@@ -124,7 +132,7 @@ func (o *CreateGitUserOptions) Run() error {
 		o.Printf("Click this URL %s\n\n", util.ColorInfo(tokenUrl))
 		o.Printf("Then COPY the token and enter in into the form below:\n\n")
 
-		err = config.EditUserAuth(userAuth, o.Username, false)
+		err = config.EditUserAuth(server.Label(), userAuth, o.Username, false)
 		if err != nil {
 			return err
 		}
@@ -133,35 +141,42 @@ func (o *CreateGitUserOptions) Run() error {
 		}
 	}
 
+	config.CurrentServer = server.URL
 	err = authConfigSvc.SaveConfig()
 	if err != nil {
 		return err
 	}
+
+	err = o.updateGitCredentialsSecret(server, userAuth)
+	if err != nil {
+		o.warnf("Failed to update jenkins git credentials secret: %v\n", err)
+	}
+
 	o.Printf("Created user %s API Token for git server %s at %s\n",
 		util.ColorInfo(o.Username), util.ColorInfo(server.Name), util.ColorInfo(server.URL))
+
 	return nil
 }
 
 // lets try use the users browser to find the API token
-func (o *CreateGitUserOptions) tryFindAPITokenFromBrowser(tokenUrl string, userAuth *auth.UserAuth) error {
-	var err error
-
-	ctxt, cancel := context.WithCancel(context.Background())
+func (o *CreateGitTokenOptions) tryFindAPITokenFromBrowser(tokenUrl string, userAuth *auth.UserAuth) error {
+	var ctxt context.Context
+	var cancel context.CancelFunc
+	if o.Timeout != "" {
+		duration, err := time.ParseDuration(o.Timeout)
+		if err != nil {
+			return err
+		}
+		ctxt, cancel = context.WithTimeout(context.Background(), duration)
+	} else {
+		ctxt, cancel = context.WithCancel(context.Background())
+	}
 	defer cancel()
+	o.Printf("Trying to generate an API token for user: %s\n", util.ColorInfo(userAuth.Username))
 
-	file, err := ioutil.TempFile("", "jx-browser")
+	c, err := o.createChromeClient(ctxt)
 	if err != nil {
 		return err
-	}
-	writer := bufio.NewWriter(file)
-	o.Printf("Chrome debugging logs written to: %s\n", util.ColorInfo(file.Name()))
-
-	logger := func(message string, args ...interface{}) {
-		fmt.Fprintf(writer, message+"\n", args...)
-	}
-	c, err := chromedp.New(ctxt, chromedp.WithLog(logger))
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	err = c.Run(ctxt, chromedp.Tasks{
@@ -186,6 +201,8 @@ func (o *CreateGitUserOptions) tryFindAPITokenFromBrowser(tokenUrl string, userA
 	}
 
 	if login {
+		o.captureScreenshot(ctxt, c, "screenshot-git-login.png", "//div")
+
 		o.Printf("logging in\n")
 		err = c.Run(ctxt, chromedp.Tasks{
 			chromedp.WaitVisible("user_name", chromedp.ByID),
@@ -196,6 +213,9 @@ func (o *CreateGitUserOptions) tryFindAPITokenFromBrowser(tokenUrl string, userA
 			return err
 		}
 	}
+
+	o.captureScreenshot(ctxt, c, "screenshot-git-api-token.png", "//div")
+
 	o.Printf("Generating new token\n")
 
 	tokenId := "jx-" + string(uuid.NewUUID())
@@ -229,6 +249,57 @@ func (o *CreateGitUserOptions) tryFindAPITokenFromBrowser(tokenUrl string, userA
 	err = c.Shutdown(ctxt)
 	if err != nil {
 		return err
+	}
+	return nil
+}
+
+func (o *CreateGitTokenOptions) updateGitCredentialsSecret(server *auth.AuthServer, userAuth *auth.UserAuth) error {
+	client, ns, err := o.Factory.CreateClient()
+	if err != nil {
+		return err
+	}
+	options := metav1.GetOptions{}
+	secret, err := client.CoreV1().Secrets(ns).Get(kube.SecretJenkinsGitCredentials, options)
+	if err != nil {
+		// lets try the real dev namespace if we are in a different environment
+		devNs, _, err := kube.GetDevNamespace(client, ns)
+		if err != nil {
+			return err
+		}
+		secret, err = client.CoreV1().Secrets(devNs).Get(kube.SecretJenkinsGitCredentials, options)
+		if err != nil {
+			return err
+		}
+	}
+	text := ""
+	data := secret.Data[jenkinsGitCredentialsSecretKey]
+	if data != nil {
+		text = string(data)
+	}
+	lines := strings.Split(text, "\n")
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		return fmt.Errorf("Failed to parse server URL %s due to: %s", server.URL, err)
+	}
+
+	found := false
+	prefix := u.Scheme + "://"
+	host := u.Host
+	for _, line := range lines {
+		if strings.HasPrefix(line, prefix) && strings.HasSuffix(line, host) {
+			found = true
+		}
+	}
+	if !found {
+		if !strings.HasSuffix(text, "\n") {
+			text += "\n"
+		}
+		text += prefix + userAuth.Username + ":" + userAuth.ApiToken + "@" + host
+		secret.Data[jenkinsGitCredentialsSecretKey] = []byte(text)
+		_, err = client.CoreV1().Secrets(ns).Update(secret)
+		if err != nil {
+			return fmt.Errorf("Failed to update secret %s due to %s", secret.Name, err)
+		}
 	}
 	return nil
 }

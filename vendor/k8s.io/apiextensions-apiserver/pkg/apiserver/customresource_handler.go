@@ -309,8 +309,8 @@ func (r *crdHandler) removeDeadStorage() {
 	r.customStorage.Store(storageMap2)
 }
 
-// GetCustomResourceListerCollectionDeleter returns the ListerCollectionDeleter of
-// the given crd.
+// GetCustomResourceListerCollectionDeleter returns the ListerCollectionDeleter for
+// the given uid, or nil if an error occurs.
 func (r *crdHandler) GetCustomResourceListerCollectionDeleter(crd *apiextensions.CustomResourceDefinition) (finalizer.ListerCollectionDeleter, error) {
 	info, err := r.getOrCreateServingInfoFor(crd)
 	if err != nil {

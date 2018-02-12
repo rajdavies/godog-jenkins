@@ -1,5 +1,5 @@
-hash: 2dc3d9cb3f2581d196f7e39f9284b3e13ba3d2ab241680fe1d08e4242520c59b
-updated: 2018-02-03T11:09:46.290008Z
+hash: 4455d4aff806ffa5428d2d380696e4f2bce1bef5294c6af26c522261cbacf0de
+updated: 2018-02-09T07:09:35.420923Z
 imports:
 - name: cloud.google.com/go
   version: 3b1ae45394a234c385be014e9a488f2bb6eef821
@@ -7,7 +7,7 @@ imports:
   - compute/metadata
   - internal
 - name: code.gitea.io/sdk
-  version: a184f2d3343623c67b835a51ab1685b568016fd9
+  version: 0489f9e4e096654f966ecdd67cee3eb5eba6e3d7
   subpackages:
   - gitea
 - name: github.com/Azure/go-autorest
@@ -19,8 +19,10 @@ imports:
   - autorest/date
 - name: github.com/blang/semver
   version: b38d23b8782a487059e8fc8773e9a5b228a77cb6
+- name: github.com/BurntSushi/toml
+  version: b26d9c308763d68093482582cea63d69be07a0f0
 - name: github.com/chromedp/cdproto
-  version: 861b49d6c4ac9bf684dd1a46032d7c8750d0d7da
+  version: f100dc013e8818dcb609fa058c3a6dae6d1310d0
   subpackages:
   - accessibility
   - animation
@@ -66,6 +68,10 @@ imports:
   - client
   - kb
   - runner
+- name: github.com/cpuguy83/go-md2man
+  version: 71acacd42f85e5e82f70a55327789582a5200a90
+  subpackages:
+  - md2man
 - name: github.com/davecgh/go-spew
   version: 782f4967f2dc4564575ca782fe2d04090b5faca8
   subpackages:
@@ -78,6 +84,16 @@ imports:
   version: 570b54cabe6b8eb0bc2dfce68d964677d63b5260
 - name: github.com/ghodss/yaml
   version: 73d445a93680fa1a78ae23a5839bad48f32ba1ee
+- name: github.com/gobwas/glob
+  version: 5ccd90ef52e1e632236f7326478d4faa74f99438
+  subpackages:
+  - compiler
+  - match
+  - syntax
+  - syntax/ast
+  - syntax/lexer
+  - util/runes
+  - util/strings
 - name: github.com/gogo/protobuf
   version: c0656edd0d9eab7c66d1eb0c568f9039345796f7
   subpackages:
@@ -94,7 +110,7 @@ imports:
   - ptypes/duration
   - ptypes/timestamp
 - name: github.com/google/go-github
-  version: 897969cdc831052c4694e205e24a033fe7248c2f
+  version: 08e68b58d6369e25c2375020353d0d642aa4b2b1
   subpackages:
   - github
 - name: github.com/google/go-querystring
@@ -135,7 +151,7 @@ imports:
   subpackages:
   - io
 - name: github.com/jenkins-x/golang-jenkins
-  version: abbc6a467e12819e13d419e9c89f253bf30b0a66
+  version: ec7a97e4a0d7bfebfacb5818e70b77744d9f4d6d
 - name: github.com/json-iterator/go
   version: 13f86432b882000a51c6e610c620974462691a97
 - name: github.com/juju/ratelimit
@@ -152,6 +168,8 @@ imports:
   - jwriter
 - name: github.com/MakeNowJust/heredoc
   version: bb23615498cded5e105af4ce27de75b089cbe851
+- name: github.com/Masterminds/semver
+  version: 517734cc7d6470c0d07130e40fd40bdeb9bcd3fd
 - name: github.com/mattn/go-colorable
   version: 5411d3eea5978e6cdc258b30de592b60df6aba96
   repo: https://github.com/mattn/go-colorable
@@ -171,15 +189,15 @@ imports:
 - name: github.com/pkg/browser
   version: c90ca0c84f15f81c982e32665bffd8d7aac8f097
 - name: github.com/russross/blackfriday
-  version: 300106c228d52c8941d4b3de6054a6062a86dda3
+  version: 4048872b16cc0fc2c5fd9eacf0ed2c2fedaa0c8c
 - name: github.com/sergi/go-diff
-  version: 217d392c389de447c964f954cc5e4774cde4b66b
+  version: da645544ed44df016359bd4c0e3dc60ee3a0da43
   subpackages:
   - diffmatchpatch
-- name: github.com/shurcooL/sanitized_anchor_name
-  version: 10ef21a441db47d8b13ebcc5fd2310f636973c77
 - name: github.com/spf13/cobra
   version: 9495bc009a56819bdb0ddbc1a373e29c140bc674
+  subpackages:
+  - doc
 - name: github.com/spf13/pflag
   version: 4c012f6dcd9546820e378d0bdda4d8fc772cdfea
 - name: github.com/src-d/gcfg
@@ -348,7 +366,7 @@ imports:
   - storage/v1alpha1
   - storage/v1beta1
 - name: k8s.io/apiextensions-apiserver
-  version: 5d32743e4807506730116986939c94b6c5e1e5fd
+  version: b357563e8dd364d1be52dbdc8457cd65badc427b
   subpackages:
   - pkg/apis/apiextensions
   - pkg/apis/apiextensions/v1beta1
@@ -460,11 +478,20 @@ imports:
   - util/jsonpath
   - util/retry
 - name: k8s.io/code-generator
-  version: 64ca0808efd56c2418939848947c06b8d495144d
+  version: 4fdcc27750e20a0d0fe12007ddfb235ba657529c
 - name: k8s.io/gengo
   version: 8394c995ab8fbe52216f38d0e1a37de36d820528
+- name: k8s.io/helm
+  version: 8009115d3a96653b2c7d97dc119bb665b1c08f9b
+  subpackages:
+  - pkg/chartutil
+  - pkg/ignore
+  - pkg/proto/hapi/chart
+  - pkg/proto/hapi/version
+  - pkg/sympath
+  - pkg/version
 - name: k8s.io/metrics
-  version: a51d59ae25bec1b94f00be3fe970268aed3eadfa
+  version: 7619a6675e2689251ee22bcc56195dc52179f706
   subpackages:
   - pkg/apis/metrics
   - pkg/apis/metrics/v1alpha1

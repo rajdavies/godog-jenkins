@@ -4,8 +4,6 @@ import (
 	"errors"
 	"io"
 
-	"os"
-
 	"time"
 
 	"strings"
@@ -32,8 +30,10 @@ type InitOptions struct {
 }
 
 type InitFlags struct {
-	Domain   string
-	Provider string
+	Domain      string
+	Provider    string
+	DraftClient bool
+	HelmClient  bool
 }
 
 const (
@@ -74,8 +74,12 @@ func NewCmdInit(f cmdutil.Factory, out io.Writer, errOut io.Writer) *cobra.Comma
 		},
 	}
 
+	options.addCommonFlags(cmd)
+
 	cmd.Flags().StringVarP(&options.Flags.Provider, "provider", "", "", "Cloud service providing the kubernetes cluster.  Supported providers: [minikube,gke,aks]")
 	cmd.Flags().StringVarP(&options.Flags.Domain, "domain", "d", "", "Domain to expose ingress endpoints.  Example: jenkinsx.io")
+	cmd.Flags().BoolVarP(&options.Flags.DraftClient, "draft-client-only", "", false, "Only install draft client")
+	cmd.Flags().BoolVarP(&options.Flags.HelmClient, "helm-client-only", "", false, "Only install helm client")
 	return cmd
 }
 
@@ -87,25 +91,29 @@ func (o *InitOptions) Run() error {
 		return err
 	}
 
-	// helm init
-	err = o.initHelm()
+	// helm init, this has been seen to fail intermittently on public clouds, so lets retry a couple of times
+	err = o.retry(3, 2*time.Second, func() (err error) {
+		err = o.initHelm()
+		return
+	})
+
 	if err != nil {
 		log.Fatalf("helm init failed: %v", err)
-		os.Exit(-1)
+		return err
 	}
 
 	// draft init
 	err = o.initDraft()
 	if err != nil {
 		log.Fatalf("draft init failed: %v", err)
-		os.Exit(-1)
+		return err
 	}
 
 	// install ingress
 	err = o.initIngress()
 	if err != nil {
 		log.Fatalf("ingress init failed: %v", err)
-		os.Exit(-1)
+		return err
 	}
 
 	return nil
@@ -114,6 +122,18 @@ func (o *InitOptions) Run() error {
 func (o *InitOptions) initHelm() error {
 	f := o.Factory
 	client, _, err := f.CreateClient()
+	if err != nil {
+		return err
+	}
+
+	if o.Flags.HelmClient {
+		err = o.runCommand("helm", "init", "--client-only")
+		if err != nil {
+			return err
+		}
+	}
+
+	err = o.runCommand("helm", "repo", "add", "jenkins-x", "http://chartmuseum.build.cd.jenkins-x.io")
 	if err != nil {
 		return err
 	}
@@ -161,7 +181,7 @@ func (o *InitOptions) initDraft() error {
 		return err
 	}
 
-	if running || o.Flags.Provider == GKE || o.Flags.Provider == AKS {
+	if running || o.Flags.Provider == GKE || o.Flags.Provider == AKS || o.Flags.DraftClient {
 		err = o.runCommand("draft", "init", "--auto-accept", "--client-only")
 
 	} else {
@@ -183,7 +203,7 @@ func (o *InitOptions) initDraft() error {
 		return err
 	}
 
-	if !running && o.Flags.Provider != GKE && o.Flags.Provider != AKS {
+	if !running && o.Flags.Provider != GKE && o.Flags.Provider != AKS && !o.Flags.DraftClient {
 		err = kube.WaitForDeploymentToBeReady(client, "draftd", "kube-system", 5*time.Minute)
 		if err != nil {
 			return err
@@ -254,12 +274,16 @@ func (o *InitOptions) initIngress() error {
 	}
 
 	installIngressController := false
-	prompt := &survey.Confirm{
-		Message: "No existing ingress controller found in the kube-system namespace, shall we install one?",
-		Default: true,
-		Help:    "An ingress controller works with an external loadbalancer so you can access Jenkins X and your applications",
+	if o.BatchMode {
+		installIngressController = true
+	} else {
+		prompt := &survey.Confirm{
+			Message: "No existing ingress controller found in the kube-system namespace, shall we install one?",
+			Default: true,
+			Help:    "An ingress controller works with an external loadbalancer so you can access Jenkins X and your applications",
+		}
+		survey.AskOne(prompt, &installIngressController, nil)
 	}
-	survey.AskOne(prompt, &installIngressController, nil)
 
 	if !installIngressController {
 		return nil
@@ -330,6 +354,10 @@ func (o *CommonOptions) GetDomain(client *kubernetes.Clientset, domain string, p
 	defaultDomain := fmt.Sprintf("%s.nip.io", address)
 	if domain == "" {
 
+		if o.BatchMode {
+			log.Successf("No domain flag provided so using default %s to generate Ingress rules", defaultDomain)
+			return defaultDomain, nil
+		}
 		log.Successf("You can now configure a wildcard DNS pointing to the new loadbalancer address %s", address)
 		log.Infof("If you don't have a wildcard DNS yet you can use the default %s", defaultDomain)
 
@@ -348,7 +376,6 @@ func (o *CommonOptions) GetDomain(client *kubernetes.Clientset, domain string, p
 		if domain != defaultDomain {
 			log.Successf("You can now configure your wildcard DNS %s to point to %s\n", domain, address)
 		}
-
 	}
 
 	return domain, nil

@@ -41,19 +41,30 @@ func NewGitHubProvider(server *auth.AuthServer, user *auth.UserAuth) (GitProvide
 
 func (p *GitHubProvider) ListOrganisations() ([]GitOrganisation, error) {
 	answer := []GitOrganisation{}
-	orgs, _, err := p.Client.Organizations.List(p.Context, p.Username, nil)
-	if err != nil {
-		return answer, err
+	pageSize := 100
+	options := github.ListOptions{
+		Page:    0,
+		PerPage: pageSize,
 	}
-
-	for _, org := range orgs {
-		name := org.Login
-		if name != nil {
-			o := GitOrganisation{
-				Login: *name,
-			}
-			answer = append(answer, o)
+	for {
+		orgs, _, err := p.Client.Organizations.List(p.Context, "", &options)
+		if err != nil {
+			return answer, err
 		}
+
+		for _, org := range orgs {
+			name := org.Login
+			if name != nil {
+				o := GitOrganisation{
+					Login: *name,
+				}
+				answer = append(answer, o)
+			}
+		}
+		if len(orgs) < pageSize || len(orgs) == 0 {
+			break
+		}
+		options.Page += 1
 	}
 	return answer, nil
 }
@@ -234,7 +245,46 @@ func (p *GitHubProvider) CreatePullRequest(data *GitPullRequestArguments) (*GitP
 	}
 	return &GitPullRequest{
 		URL: notNullString(pr.HTMLURL),
+		Owner: owner,
+		Repo: repo,
+		Number: pr.Number,
 	}, nil
+}
+
+func (p *GitHubProvider) UpdatePullRequestStatus(pr *GitPullRequest) error {
+	if pr.Number == nil {
+		return fmt.Errorf("Missing Number for GitPullRequest %#v", pr)
+	}
+	n := *pr.Number
+	result, _, err := p.Client.PullRequests.Get(p.Context, pr.Owner, pr.Repo, n)
+	if err != nil {
+		return err
+	}
+	if result.Mergeable != nil {
+		pr.Mergeable = result.Mergeable
+	}
+	if result.Merged != nil {
+		pr.Merged = result.Merged
+	}
+	if result.ClosedAt != nil {
+		pr.ClosedAt = result.ClosedAt
+	}
+	if result.MergedAt != nil {
+		pr.MergedAt = result.MergedAt
+	}
+	if result.State != nil {
+		pr.State = result.State
+	}
+	if result.StatusesURL != nil {
+		pr.StatusesURL = result.StatusesURL
+	}
+	if result.IssueURL != nil {
+		pr.IssueURL = result.IssueURL
+	}
+	if result.DiffURL != nil {
+		pr.IssueURL = result.DiffURL
+	}
+	return nil
 }
 
 func notNullString(tp *string) string {

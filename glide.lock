@@ -1,5 +1,5 @@
 hash: 5e029cbcba6cffd20894ec27fec0ff9e3970a0a25d3a2c1e5897e9bffc3d892d
-updated: 2018-02-05T15:09:30.632138+01:00
+updated: 2018-02-12T13:25:06.051399606Z
 imports:
 - name: cloud.google.com/go
   version: 3b1ae45394a234c385be014e9a488f2bb6eef821
@@ -7,7 +7,7 @@ imports:
   - compute/metadata
   - internal
 - name: code.gitea.io/sdk
-  version: 0489f9e4e096654f966ecdd67cee3eb5eba6e3d7
+  version: a184f2d3343623c67b835a51ab1685b568016fd9
   subpackages:
   - gitea
 - name: github.com/Azure/go-autorest
@@ -66,7 +66,7 @@ imports:
 - name: github.com/google/btree
   version: 7d79101e329e5a3adf994758c578dab82b90c017
 - name: github.com/google/go-github
-  version: 897969cdc831052c4694e205e24a033fe7248c2f
+  version: e48060a28fac52d0f1cb758bc8b87c07bac4a87d
   subpackages:
   - github
 - name: github.com/google/go-querystring
@@ -103,7 +103,7 @@ imports:
 - name: github.com/jenkins-x/golang-jenkins
   version: abbc6a467e12819e13d419e9c89f253bf30b0a66
 - name: github.com/jenkins-x/jx
-  version: 2477abce1e21ac46958376707c723e191fdc888e
+  version: 5f0a1ca6da044c1e4d7b51267cac87234aea3418
   subpackages:
   - pkg/apis/jenkins.io
   - pkg/apis/jenkins.io/v1
@@ -119,7 +119,7 @@ imports:
   - pkg/kube
   - pkg/util
 - name: github.com/json-iterator/go
-  version: 13f86432b882000a51c6e610c620974462691a97
+  version: 36b14963da70d11297d313183d7e6388c8510e1e
 - name: github.com/juju/ratelimit
   version: 5b9ff866471762aa2ab2dced63c9fb6f53921342
 - name: github.com/mailru/easyjson
@@ -264,7 +264,7 @@ imports:
   - storage/v1alpha1
   - storage/v1beta1
 - name: k8s.io/apiextensions-apiserver
-  version: 636b19d7ffa3c76c9820cb179e5da3b976337973
+  version: 27d22a50314782b60cbb150b34dd1ba8e0c8d55c
   subpackages:
   - pkg/apis/apiextensions
   - pkg/apis/apiextensions/v1beta1
@@ -366,12 +366,12 @@ imports:
   - util/integer
   - util/jsonpath
 - name: k8s.io/kube-openapi
-  version: a07b7bbb58e7fdc5144f8d7046331d29fc9ad3b3
+  version: 39a7bf85c140f972372c2a0d1ee40adbf0c8bfe1
   subpackages:
   - pkg/common
   - pkg/util/proto
 - name: k8s.io/metrics
-  version: afc258699e8fd90778c2e1c8edc29094c25eaa32
+  version: a51d59ae25bec1b94f00be3fe970268aed3eadfa
   subpackages:
   - pkg/apis/metrics
   - pkg/apis/metrics/v1alpha1

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/jenkins-x/jx/pkg/gits"
 	"github.com/jenkins-x/jx/pkg/jx/cmd/log"
 	"github.com/jenkins-x/jx/pkg/jx/cmd/templates"
 	cmdutil "github.com/jenkins-x/jx/pkg/jx/cmd/util"
@@ -29,6 +30,7 @@ type CreateClusterMinikubeFlags struct {
 	CPU                 string
 	Driver              string
 	HyperVVirtualSwitch string
+	Namespace           string
 }
 
 var (
@@ -53,6 +55,7 @@ var (
 func NewCmdCreateClusterMinikube(f cmdutil.Factory, out io.Writer, errOut io.Writer) *cobra.Command {
 	options := CreateClusterMinikubeOptions{
 		CreateClusterOptions: CreateClusterOptions{
+			GitRepositoryOptions: gits.GitRepositoryOptions{},
 			CreateOptions: CreateOptions{
 				CommonOptions: CommonOptions{
 					Factory: f,
@@ -77,12 +80,14 @@ func NewCmdCreateClusterMinikube(f cmdutil.Factory, out io.Writer, errOut io.Wri
 	}
 
 	options.addCreateClusterFlags(cmd)
+	options.addCommonFlags(cmd)
+	addGitRepoOptionsArguments(cmd, &options.GitRepositoryOptions)
 
 	cmd.Flags().StringVarP(&options.Flags.Memory, "memory", "m", "4096", "Amount of RAM allocated to the minikube VM in MB")
 	cmd.Flags().StringVarP(&options.Flags.CPU, "cpu", "c", "3", "Number of CPUs allocated to the minikube VM")
 	cmd.Flags().StringVarP(&options.Flags.Driver, "vm-driver", "d", "", "VM driver is one of: [virtualbox xhyve vmwarefusion hyperkit]")
 	cmd.Flags().StringVarP(&options.Flags.HyperVVirtualSwitch, "hyperv-virtual-switch", "v", "", "Additional options for using HyperV with minikube")
-
+	cmd.Flags().StringVarP(&options.Flags.Namespace, "namespace", "", "jx", "The namespace the Jenkins X platform should be installed into")
 	return cmd
 }
 
@@ -232,12 +237,37 @@ func (o *CreateClusterMinikubeOptions) createClusterMinikube() error {
 
 	// call jx install
 	installOpts := &InstallOptions{
-		CommonOptions:      o.CommonOptions,
-		CloudEnvRepository: DEFAULT_CLOUD_ENVIRONMENTS_URL,
-		Provider:           MINIKUBE,     // TODO replace with context, maybe get from ~/.jx/gitAuth.yaml?
-		GitProvider:        "github.com", // TODO use the correct gitserver
+		CommonOptions:        o.CommonOptions,
+		CloudEnvRepository:   DEFAULT_CLOUD_ENVIRONMENTS_URL,
+		Provider:             MINIKUBE, // TODO replace with context, maybe get from ~/.jx/gitAuth.yaml?
+		GitRepositoryOptions: o.CreateClusterOptions.GitRepositoryOptions,
+		Namespace:            o.Flags.Namespace,
 	}
 	err = installOpts.Run()
+	if err != nil {
+		return err
+	}
+
+	context, err := o.getCommandOutput("", "kubectl", "config", "current-context")
+	if err != nil {
+		return err
+	}
+
+	ns := o.Flags.Namespace
+	if ns == "" {
+		f := o.Factory
+		_, ns, _ = f.CreateClient()
+		if err != nil {
+			return err
+		}
+	}
+
+	err = o.runCommand("kubectl", "config", "set-context", context, "--namespace", ns)
+	if err != nil {
+		return err
+	}
+
+	err = o.runCommand("kubectl", "get", "ingress")
 	if err != nil {
 		return err
 	}
