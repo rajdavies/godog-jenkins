@@ -44,8 +44,6 @@ You can then enter the required API tokens and whatnot on the first run. Future 
 
     jx create cluster gke
 
-    jx namespace jx
-
     jx create jenkins user --headless --password admin admin
 
     make bdd-cluster
