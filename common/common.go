@@ -4,13 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	
+
 	"github.com/jenkins-x/godog-jenkins/jenkins"
 	"github.com/jenkins-x/godog-jenkins/utils"
 	"github.com/jenkins-x/golang-jenkins"
 	cmdutil "github.com/jenkins-x/jx/pkg/jx/cmd/util"
 )
-
 
 type CommonTest struct {
 	Factory       cmdutil.Factory
@@ -18,7 +17,7 @@ type CommonTest struct {
 	Interactive   bool
 	Errors        *utils.ErrorSlice
 	WorkDir       string
-	AppName		  string
+	AppName       string
 }
 
 // TheApplicationShouldBeBuiltAndPromotedViaCICD asserts that the project
@@ -29,13 +28,14 @@ func (o *CommonTest) TheApplicationShouldBeBuiltAndPromotedViaCICD() error {
 		_, appName = filepath.Split(o.WorkDir)
 	}
 	f := o.Factory
+	f.SetBatch(true)
 	gitURL, err := o.GitProviderURL()
 	if err != nil {
-	  return err
+		return err
 	}
 	gitAuthSvc, err := f.CreateGitAuthConfigService()
 	if err != nil {
-	  return err
+		return err
 	}
 	gitConfig := gitAuthSvc.Config()
 	server := gitConfig.GetServer(gitURL)
@@ -56,7 +56,7 @@ func (o *CommonTest) TheApplicationShouldBeBuiltAndPromotedViaCICD() error {
 	if o.JenkinsClient == nil {
 		client, err := f.CreateJenkinsClient()
 		if err != nil {
-		  return err
+			return err
 		}
 		o.JenkinsClient = client
 	}
