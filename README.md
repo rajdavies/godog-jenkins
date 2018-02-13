@@ -10,6 +10,7 @@ This test project connects to a running Jenkins instance and runs a number of fe
     - Click the `Show API Token...` button
     - Note the token for use below
 - __GitHub personal access token__ you will need a personal access token that has the `public_repo` scope so that we can tag releases
+- __godog__ `go get github.com/DATA-DOG/godog/cmd/godog`
 
 ## JX BDD tests
 
@@ -38,6 +39,37 @@ If you have not setup API tokens for your Jenkins or git provider use interactiv
     export JX_INTERACTIVE="true"
 
 You can then enter the required API tokens and whatnot on the first run. Future tests will not need interactive mode
+
+### Testing on GKE
+
+    jx create cluster gke
+
+    jx namespace jx
+
+    jx create jenkins user --headless --password admin admin
+
+    make bdd-cluster
+
+Or to create a cluster without interaction from scripts:
+
+    gcloud auth activate-service-account --key-file $SERVICE_ACCOUNT_FILE
+
+    jx create cluster gke \
+    --skip-login=true \
+    --batch-mode \
+    --project-id ${PROJECT_ID} \
+    --zone ${ZONE} \
+    --machine-type n1-standard-2 \
+    --num-nodes 2 \
+    --git-username $GH_CREDS_USR \
+    --git-api-token $GH_CREDS_PSW \
+    --git-provider-url github.com
+
+    jx namespace jx
+
+    jx create jenkins user --headless --password admin admin
+
+    make bdd-cluster
 
 ## Setup
 
@@ -70,7 +102,7 @@ godog
 
 # FAQ
 
-## multibranch GitHub API rate limiting
+## Minikube multibranch GitHub API rate limiting
 
 Running these tests on minikube sometimes you will see github API rate limit errors when jobs are starting.
 
