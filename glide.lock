@@ -1,5 +1,5 @@
 hash: 1490cb9c7868ad608d2cc353d1fc3218d36e7f741c137a6b11e728fd8d98ea7b
-updated: 2018-02-12T13:54:38.095713099Z
+updated: 2018-02-12T23:57:06.657443576Z
 imports:
 - name: cloud.google.com/go
   version: 3b1ae45394a234c385be014e9a488f2bb6eef821
@@ -103,7 +103,7 @@ imports:
 - name: github.com/jenkins-x/golang-jenkins
   version: abbc6a467e12819e13d419e9c89f253bf30b0a66
 - name: github.com/jenkins-x/jx
-  version: 5f0a1ca6da044c1e4d7b51267cac87234aea3418
+  version: b048657d68bc816ad11189fab4676b16b6ac12bd
   subpackages:
   - pkg/apis/jenkins.io
   - pkg/apis/jenkins.io/v1
